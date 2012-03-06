@@ -1,0 +1,9 @@
+Changelog
+
+============================
+* Version 0.1 - 2012-03-05 *
+============================
+
+Initial public release which supports decoding and contains
+the MPEG4 and H264 stream parsers.
+
