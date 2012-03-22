@@ -36,7 +36,7 @@
 
 /* This is the size of the buffer for the compressed stream.
  * It limits the maximum compressed frame size. */
-#define STREAM_BUUFER_SIZE	(128 * 1024)
+#define STREAM_BUUFER_SIZE	(1024 * 1024)
 /* The number of compress4ed stream buffers */
 #define STREAM_BUFFER_CNT	2
 
@@ -72,7 +72,14 @@ int extract_and_process_header(struct instance *i)
 		return -1;
 	}
 
-	i->in.offs += used;
+	/* For H263 the header is passed with the first frame, so we should
+	 * pass it again */
+	if (i->parser.codec != V4L2_PIX_FMT_H263)
+		i->in.offs += used;
+	else
+	/* To do this we shall reset the stream parser to the initial
+	 * configuration */
+		parse_stream_init(&i->parser.ctx);
 
 	dbg("Extracted header of size %d", fs);
 
@@ -137,18 +144,20 @@ void *parser_thread_func(void *args)
 	int ret;
 	int used, fs, n;
 
-	while (!i->error && !i->finish) {
+	while (!i->error && !i->finish && !i->parser.finished) {
 		n = 0;
 		while (n < i->mfc.out_buf_cnt && i->mfc.out_buf_flag[n])
 			n++;
 
 		if (n < i->mfc.out_buf_cnt && !i->parser.finished) {
+			dbg("parser.func = %p", i->parser.func);
 			ret = i->parser.func(&i->parser.ctx,
 				i->in.p + i->in.offs, i->in.size - i->in.offs,
 				i->mfc.out_buf_addr[n], i->mfc.out_buf_size,
 				&used, &fs, 0);
 
-			if (ret == 0) {
+
+			if (ret == 0 && i->in.offs == i->in.size) {
 				dbg("Parser has extracted all frames");
 				i->parser.finished = 1;
 				fs = 0;
@@ -156,13 +165,19 @@ void *parser_thread_func(void *args)
 
 			dbg("Extracted frame of size %d", fs);
 
+			dbg("Before OUTPUT queue");
 			ret = mfc_dec_queue_buf_out(i, n, fs);
+			dbg("After OUTPUT queue");
+
 			i->mfc.out_buf_flag[n] = 1;
 
 			i->in.offs += used;
 
+
 		} else {
+			dbg("Before OUTPUT dequeue");
 			ret = dequeue_output(i, &n);
+			dbg("After OUTPUT dequeue");
 			i->mfc.out_buf_flag[n] = 0;
 			if (ret && !i->parser.finished) {
 				err("Failed to dequeue a buffer in parser_thread");
@@ -232,9 +247,7 @@ void *mfc_thread_func(void *args)
 			}
 		}
 
-		if (i->mfc.cap_buf_queued >= i->mfc.cap_buf_cnt_min ||
-			i->parser.finished
-			) {
+		if (i->mfc.cap_buf_queued >= i->mfc.cap_buf_cnt_min) {
 			/* Can dequeue a processed buffer */
 			if (dequeue_capture(i, &n, &finished)) {
 				err("Error when dequeueing CAPTURE buffer");
@@ -267,11 +280,14 @@ void *mfc_thread_func(void *args)
  * switching and synchronisation to the vsync of frame buffer. */
 void *fimc_thread_func(void *args)
 {
+	static int frames = 0;
 	static int first_run = 1;
 	struct instance *i = (struct instance *)args;
 	int n, tmp;
 
-	while (!i->error && !i->finish) {
+	while (!i->error && (!i->finish ||
+		(i->finish && !queue_empty(&i->fimc.queue))
+		)) {
 		dbg("Before fimc.todo");
 		sem_wait(&i->fimc.todo);
 		dbg("After fimc.todo");
@@ -328,6 +344,10 @@ void *fimc_thread_func(void *args)
 				break;
 			}
 		}
+
+		frames++;
+
+		dbg("Processed frame number: %d", frames);
 
 		if (fimc_dec_dequeue_buf_cap(i, &tmp)) {
 			i->error = 1;

@@ -57,6 +57,14 @@ int get_codec(char *str)
 		return V4L2_PIX_FMT_MPEG4;
 	} else if (strncasecmp("h264", str, 5) == 0) {
 		return V4L2_PIX_FMT_H264;
+	} else if (strncasecmp("h263", str, 5) == 0) {
+		return V4L2_PIX_FMT_H263;
+	} else if (strncasecmp("xvid", str, 5) == 0) {
+		return V4L2_PIX_FMT_XVID;
+	} else if (strncasecmp("mpeg2", str, 5) == 0) {
+		return V4L2_PIX_FMT_MPEG2;
+	} else if (strncasecmp("mpeg1", str, 5) == 0) {
+		return V4L2_PIX_FMT_MPEG1;
 	}
 	return 0;
 }
@@ -104,11 +112,17 @@ int parse_args(struct instance *i, int argc, char **argv)
 	}
 
 	switch (i->parser.codec) {
+	case V4L2_PIX_FMT_XVID:
+	case V4L2_PIX_FMT_H263:
 	case V4L2_PIX_FMT_MPEG4:
 		i->parser.func = parse_mpeg4_stream;
 		break;
 	case V4L2_PIX_FMT_H264:
 		i->parser.func = parse_h264_stream;
+		break;
+	case V4L2_PIX_FMT_MPEG1:
+	case V4L2_PIX_FMT_MPEG2:
+		i->parser.func = parse_mpeg2_stream;
 		break;
 	}
 

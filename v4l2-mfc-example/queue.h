@@ -42,6 +42,8 @@ int queue_add(struct queue *q, int e);
 int queue_remove(struct queue *q);
 /* Free the internal queue memory */
 void queue_free(struct queue *q);
+/* Check if the queue is empty */
+int queue_empty(struct queue *q);
 
 #endif /* INCLUDE_QUEUE_H */
 

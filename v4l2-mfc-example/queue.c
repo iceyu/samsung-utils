@@ -72,6 +72,15 @@ int queue_remove(struct queue *q)
 	return x;
 }
 
+int queue_empty(struct queue *q)
+{
+	int x;
+	pthread_mutex_lock(&q->mutex);
+	x = (q->n == 0);
+	pthread_mutex_unlock(&q->mutex);
+	return x;
+}
+
 void queue_free(struct queue *q)
 {
 	free(q->q);

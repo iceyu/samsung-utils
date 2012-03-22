@@ -1,6 +1,14 @@
 Changelog
 
 ============================
+* Version 0.2 - 2012-03-22 *
+============================
+
+Added MPEG2 parser and support for H263.
+Experimental support for XVID has also been added.
+Bugfixes have been made in the MPEG4 parser.
+
+============================
 * Version 0.1 - 2012-03-05 *
 ============================
 
