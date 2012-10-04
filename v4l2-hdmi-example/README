@@ -1,0 +1,12 @@
+
+Compilation:
+
+arm-linux-gnueabi-gcc main.c -o tvdemo -Ikernel/usr/include/ -std=gnu99 -lm -O2
+
+Command line example
+
+./tvdemo /dev/video10 720 480 0 0
+
+TODO:
+
+Add Makefile
