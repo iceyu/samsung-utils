@@ -1,1 +1,18 @@
+Version 0.1.1
+- add Makefile
+- add Apache License
+- use arg to set format at each stage
+- use arg to set backing storage at last stage
+- rename options -0, -1 to -f, -F
+- revise code of YUYV dumping to PPM
+- supoprt for RGB565 and RGB4 formats
+- fix missing bytesperline at some S_FMT calls
+- fix missing length=1 at some QBUF calls
+- change PPM naming convention
+- modify pipeline to
+	VIVI_CAPTURE(DMABUF import)->
+	FIMC0_OUTPUT(MMAP, EXPORT DMABUF) -> FIMC0_CAPTURE(MMAP, EXPORT DMABUF) ->
+	FIMC1_OUTPUT(DMABUF import) -> FIMC1_CAPTURE(USERPTR) -> file/anonymous memory
+- make PPM dumping optional
+
 Version 0.1
