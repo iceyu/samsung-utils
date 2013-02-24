@@ -123,18 +123,23 @@ struct stream {
 
 static void usage(char *name)
 {
-	fprintf(stderr, "usage: %s [-Moisth]\n", name);
+	fprintf(stderr, "usage: %s [-bFfhiMoSst]\n", name);
+
+	fprintf(stderr, "\nCapture options:\n\n");
+	fprintf(stderr, "\t-i <video-node>\tset video node like /dev/video*\n");
+	fprintf(stderr, "\t-f <fourcc>\tset input format using 4cc\n");
+	fprintf(stderr, "\t-S <width,height>\tset input resolution\n");
+	fprintf(stderr, "\t-s <width,height>@<left,top>\tset crop area\n");
+
+	fprintf(stderr, "\nDisplay options:\n\n");
 	fprintf(stderr, "\t-M <drm-module>\tset DRM module\n");
 	fprintf(stderr, "\t-o <connector_id>:<crtc_id>:<mode>\tset a mode\n");
-	fprintf(stderr, "\t-i <video-node>\tset video node like /dev/video*\n");
-	fprintf(stderr, "\t-S <width,height>\tset input resolution\n");
-	fprintf(stderr, "\t-f <fourcc>\tset input format using 4cc\n");
 	fprintf(stderr, "\t-F <fourcc>\tset output format using 4cc\n");
-	fprintf(stderr, "\t-s <width,height>@<left,top>\tset crop area\n");
 	fprintf(stderr, "\t-t <width,height>@<left,top>\tset compose area\n");
+
+	fprintf(stderr, "\nGeneric options:\n\n");
 	fprintf(stderr, "\t-b buffer_count\tset number of buffers\n");
 	fprintf(stderr, "\t-h\tshow this help\n");
-	fprintf(stderr, "\n\tDefault is to dump all info.\n");
 }
 
 static inline int parse_rect(char *s, struct v4l2_rect *r)
@@ -151,25 +156,20 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 	int c, ret;
 	memset(s, 0, sizeof(*s));
 
-	while ((c = getopt(argc, argv, "M:o:i:S:f:F:s:t:b:h")) != -1) {
+	while ((c = getopt(argc, argv, "b:F:f:hi:M:o:S:s:t:")) != -1) {
 		switch (c) {
-		case 'M':
-			strncpy(s->module, optarg, 31);
-			break;
-		case 'o':
-			ret = sscanf(optarg, "%u:%u:%31s", &s->conId, &s->crtId,
-				s->modestr);
-			if (WARN_ON(ret != 3, "incorrect mode description\n"))
+		case 'b':
+			ret = sscanf(optarg, "%u", &s->buffer_count);
+			if (WARN_ON(ret != 1, "incorrect buffer count\n"))
 				return -1;
 			break;
-		case 'i':
-			strncpy(s->video, optarg, 31);
-			break;
-		case 'S':
-			ret = sscanf(optarg, "%u,%u", &s->w, &s->h);
-			if (WARN_ON(ret != 2, "incorrect input size\n"))
+		case 'F':
+			if (WARN_ON(strlen(optarg) != 4, "invalid fourcc\n"))
 				return -1;
-			s->use_wh = 1;
+			s->out_fourcc = ((unsigned)optarg[0] << 0) |
+				((unsigned)optarg[1] << 8) |
+				((unsigned)optarg[2] << 16) |
+				((unsigned)optarg[3] << 24);
 			break;
 		case 'f':
 			if (WARN_ON(strlen(optarg) != 4, "invalid fourcc\n"))
@@ -179,13 +179,27 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 				((unsigned)optarg[2] << 16) |
 				((unsigned)optarg[3] << 24);
 			break;
-		case 'F':
-			if (WARN_ON(strlen(optarg) != 4, "invalid fourcc\n"))
+		case '?':
+		case 'h':
+			usage(argv[0]);
+			return -1;
+		case 'i':
+			strncpy(s->video, optarg, 31);
+			break;
+		case 'M':
+			strncpy(s->module, optarg, 31);
+			break;
+		case 'o':
+			ret = sscanf(optarg, "%u:%u:%31s", &s->conId, &s->crtId,
+				s->modestr);
+			if (WARN_ON(ret != 3, "incorrect mode description\n"))
 				return -1;
-			s->out_fourcc = ((unsigned)optarg[0] << 0) |
-				((unsigned)optarg[1] << 8) |
-				((unsigned)optarg[2] << 16) |
-				((unsigned)optarg[3] << 24);
+			break;
+		case 'S':
+			ret = sscanf(optarg, "%u,%u", &s->w, &s->h);
+			if (WARN_ON(ret != 2, "incorrect input size\n"))
+				return -1;
+			s->use_wh = 1;
 			break;
 		case 's':
 			ret = parse_rect(optarg, &s->crop);
@@ -199,15 +213,6 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 				return -1;
 			s->use_compose = 1;
 			break;
-		case 'b':
-			ret = sscanf(optarg, "%u", &s->buffer_count);
-			if (WARN_ON(ret != 1, "incorrect buffer count\n"))
-				return -1;
-			break;
-		case '?':
-		case 'h':
-			usage(argv[0]);
-			return -1;
 		}
 	}
 
