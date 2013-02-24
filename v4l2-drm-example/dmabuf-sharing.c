@@ -75,6 +75,7 @@ struct setup {
 	uint32_t crtId;
 	char modestr[32];
 	char video[32];
+	unsigned int use_plane : 1;
 	unsigned int w, h;
 	unsigned int use_wh : 1;
 	unsigned int in_fourcc;
@@ -90,12 +91,20 @@ struct drm_device {
 	const char *module;
 	int fd;
 
+	int crtc_index;
 	unsigned int crtc_id;
 	unsigned int con_id;
+	unsigned int plane_id;
+	drmModeConnector *connector;
 
 	drmModeModeInfo mode;
 	const char *modestr;
+
 	unsigned int format;
+	unsigned int width;
+	unsigned int height;
+
+	struct v4l2_rect compose;
 };
 
 struct v4l2_device {
@@ -134,6 +143,7 @@ static void usage(char *name)
 	fprintf(stderr, "\nDisplay options:\n\n");
 	fprintf(stderr, "\t-M <drm-module>\tset DRM module\n");
 	fprintf(stderr, "\t-o <connector_id>:<crtc_id>:<mode>\tset a mode\n");
+	fprintf(stderr, "\t-p <connector_id>:<crtc_id>\toutput to a plane\n");
 	fprintf(stderr, "\t-F <fourcc>\tset output format using 4cc\n");
 	fprintf(stderr, "\t-t <width,height>@<left,top>\tset compose area\n");
 
@@ -160,7 +170,7 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 
 	strcpy(s->video, "/dev/video0");
 
-	while ((c = getopt(argc, argv, "b:F:f:hi:M:o:S:s:t:")) != -1) {
+	while ((c = getopt(argc, argv, "b:F:f:hi:M:o:p:S:s:t:")) != -1) {
 		switch (c) {
 		case 'b':
 			ret = sscanf(optarg, "%u", &s->buffer_count);
@@ -198,6 +208,12 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 				s->modestr);
 			if (WARN_ON(ret != 3, "incorrect mode description\n"))
 				return -1;
+			break;
+		case 'p':
+			ret = sscanf(optarg, "%u:%u", &s->conId, &s->crtId);
+			if (WARN_ON(ret != 2, "incorrect plane description\n"))
+				return -1;
+			s->use_plane = 1;
 			break;
 		case 'S':
 			ret = sscanf(optarg, "%u,%u", &s->w, &s->h);
@@ -275,52 +291,108 @@ fail_gem:
 	return -1;
 }
 
-static int drm_find_mode(struct drm_device *dev, drmModeModeInfo *m)
+static int drm_find_crtc(struct drm_device *dev)
 {
 	int ret = -1;
+
 	drmModeRes *res = drmModeGetResources(dev->fd);
 	if (WARN_ON(!res, "drmModeGetResources failed: %s\n", ERRSTR))
 		return -1;
 
 	if (WARN_ON(res->count_crtcs <= 0, "drm: no crts\n"))
-		goto fail_res;
+		goto done;
 
-	if (WARN_ON(res->count_connectors <= 0, "drm: no connectors\n"))
-		goto fail_res;
+	dev->crtc_index = -1;
 
-	drmModeConnector *c;
-	c = drmModeGetConnector(dev->fd, dev->con_id);
-	if (WARN_ON(!c, "drmModeGetConnector failed: %s\n", ERRSTR))
-		goto fail_res;
-
-	if (WARN_ON(!c->count_modes, "connector supports no mode\n"))
-		goto fail_conn;
-
-	drmModeModeInfo *found = NULL;
-	for (int i = 0; i < c->count_modes; ++i) {
-		if (strcmp(c->modes[i].name, dev->modestr) == 0) {
-			found = &c->modes[i];
+	for (int i = 0; i < res->count_crtcs; ++i) {
+		if (dev->crtc_id == res->crtcs[i]) {
+			dev->crtc_index = i;
 			break;
 		}
 	}
 
-	if (WARN_ON(!found, "mode %s not supported\n", dev->modestr)) {
-		fprintf(stderr, "Valid modes:");
-		for (int i = 0; i < c->count_modes; ++i)
-			fprintf(stderr, " %s", c->modes[i].name);
-		fprintf(stderr, "\n");
-		goto fail_conn;
-	}
+	if (WARN_ON(dev->crtc_index == -1, "drm: CRTC %u not found\n", dev->crtc_id))
+		goto done;
 
-	memcpy(m, found, sizeof *found);
+	if (WARN_ON(res->count_connectors <= 0, "drm: no connectors\n"))
+		goto done;
+
+	dev->connector = drmModeGetConnector(dev->fd, dev->con_id);
+	if (WARN_ON(!dev->connector, "drmModeGetConnector failed: %s\n", ERRSTR))
+		goto done;
+
 	ret = 0;
 
-fail_conn:
-	drmModeFreeConnector(c);
-
-fail_res:
+done:
 	drmModeFreeResources(res);
+	return ret;
+}
 
+static int drm_find_mode(struct drm_device *dev, drmModeModeInfo *m)
+{
+	drmModeConnector *c = dev->connector;
+
+	if (WARN_ON(!c->count_modes, "connector supports no mode\n"))
+		return -1;
+
+	for (int i = 0; i < c->count_modes; ++i) {
+		if (strcmp(c->modes[i].name, dev->modestr) == 0) {
+			*m = c->modes[i];
+			return 0;
+		}
+	}
+
+	WARN_ON(1, "mode %s not supported\n", dev->modestr);
+	fprintf(stderr, "Valid modes:");
+	for (int i = 0; i < c->count_modes; ++i)
+		fprintf(stderr, " %s", c->modes[i].name);
+	fprintf(stderr, "\n");
+	return -1;
+}
+
+/* Find an unused plane that supports the requested format */
+static int drm_find_plane(struct drm_device *dev)
+{
+	drmModePlaneResPtr planes;
+	drmModePlanePtr plane;
+	unsigned int i;
+	unsigned int j;
+	int ret = -1;
+
+	planes = drmModeGetPlaneResources(dev->fd);
+	if (WARN_ON(!planes, "drmModeGetPlaneResources failed: %s\n", ERRSTR))
+		return -1;
+
+	for (i = 0; i < planes->count_planes; ++i) {
+		plane = drmModeGetPlane(dev->fd, planes->planes[i]);
+		if (WARN_ON(!planes, "drmModeGetPlane failed: %s\n", ERRSTR))
+			break;
+
+		if (plane->crtc_id)
+			continue;
+
+		if (!(plane->possible_crtcs & (1 << dev->crtc_index))) {
+			drmModeFreePlane(plane);
+			continue;
+		}
+
+		for (j = 0; j < plane->count_formats; ++j) {
+			if (plane->formats[j] == dev->format)
+				break;
+		}
+
+		if (j == plane->count_formats) {
+			drmModeFreePlane(plane);
+			continue;
+		}
+
+		dev->plane_id = plane->plane_id;
+		drmModeFreePlane(plane);
+		ret = 0;
+		break;
+	}
+
+	drmModeFreePlaneResources(planes);
 	return ret;
 }
 
@@ -339,17 +411,45 @@ static void drm_init(struct drm_device *dev, const struct v4l2_pix_format *fmt,
 	}
 	printf("buffers ready\n");
 
-	ret = drm_find_mode(dev, &dev->mode);
-	BYE_ON(ret, "failed to find valid mode\n");
+	ret = drm_find_crtc(dev);
+	BYE_ON(ret, "failed to find CRTC and/or connector\n");
+
+	if (dev->modestr[0]) {
+		ret = drm_find_mode(dev, &dev->mode);
+		BYE_ON(ret, "failed to find valid mode\n");
+
+		ret = drmModeSetCrtc(dev->fd, dev->crtc_id, buffers[0].fb_handle,
+				     0, 0, &dev->con_id, 1, &dev->mode);
+		BYE_ON(ret, "drmModeSetCrtc failed: %s\n", ERRSTR);
+	} else {
+		ret = drm_find_plane(dev);
+		BYE_ON(ret, "failed to find compatible plane\n");
+	}
 }
 
 static void drm_page_flip(struct drm_device *dev, struct buffer *buffer)
 {
 	int ret;
 
-	ret = drmModePageFlip(dev->fd, dev->crtc_id, buffer->fb_handle,
-		DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buffer->index);
-	BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
+	if (dev->plane_id) {
+		ret = drmModeSetPlane(dev->fd, dev->plane_id, dev->crtc_id,
+				      buffer->fb_handle, 0,
+				      dev->compose.left, dev->compose.top,
+				      dev->compose.width, dev->compose.height,
+				      0, 0, dev->width << 16, dev->height << 16);
+		BYE_ON(ret, "drmModeSetPlane failed: %s\n", ERRSTR);
+
+		drmVBlank vblank;
+		vblank.request.type = DRM_VBLANK_EVENT | DRM_VBLANK_RELATIVE;
+		vblank.request.sequence = 1;
+		vblank.request.signal = (unsigned long)buffer->index;
+		ret = drmWaitVBlank(dev->fd, &vblank);
+		BYE_ON(ret, "drmWaitVBlank failed: %s\n", ERRSTR);
+	} else {
+		ret = drmModePageFlip(dev->fd, dev->crtc_id, buffer->fb_handle,
+			DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buffer->index);
+		BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
+	}
 }
 
 static void v4l2_init(struct v4l2_device *dev, unsigned int num_buffers)
@@ -481,19 +581,18 @@ int main(int argc, char *argv[])
 	drm.module = s.module;
 	drm.modestr = s.modestr;
 	drm.format = s.out_fourcc;
+	drm.width = v4l2.format.width;
+	drm.height = v4l2.format.height;
 	drm.crtc_id = s.crtId;
 	drm.con_id = s.conId;
 
 	drm_init(&drm, &v4l2.format, s.buffer_count, buffers);
 
-	ret = drmModeSetCrtc(drm.fd, drm.crtc_id, buffers[0].fb_handle, 0, 0,
-		&drm.con_id, 1, &drm.mode);
-	BYE_ON(ret, "drmModeSetCrtc failed: %s\n", ERRSTR);
-
-	/* The first buffer is used for the initial CRTC frame buffer. Enqueue
-	 * all others to V4L2.
+	/* When using the CRTC the first buffer is used for the initial CRTC
+	 * frame buffer. Enqueue all other buffers to V4L2. When using a plane
+	 * enqueue all buffers to V4L2.
 	 */
-	for (unsigned int i = 1; i < s.buffer_count; ++i)
+	for (unsigned int i = drm.plane_id ? 0 : 1; i < s.buffer_count; ++i)
 		v4l2_queue_buffer(&v4l2, &buffers[i]);
 
 	int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -507,9 +606,18 @@ int main(int argc, char *argv[])
 
 	/* buffer currently used by drm */
 	stream.v4l2 = &v4l2;
-	stream.current_buffer = 0;
+	stream.current_buffer = drm.plane_id ? -1 : 0;
 	stream.buffers = buffers;
 	stream.num_buffers = s.buffer_count;
+
+	if (!s.use_compose) {
+		drm.compose.left = 0;
+		drm.compose.top = 0;
+		drm.compose.width = v4l2.format.width;
+		drm.compose.height = v4l2.format.height;
+	} else {
+		drm.compose = s.compose;
+	}
 
 	while ((ret = poll(fds, 2, 5000)) > 0) {
 		if (fds[0].revents & POLLIN) {
@@ -524,6 +632,7 @@ int main(int argc, char *argv[])
 			memset(&evctx, 0, sizeof evctx);
 			evctx.version = DRM_EVENT_CONTEXT_VERSION;
 			evctx.page_flip_handler = page_flip_handler;
+			evctx.vblank_handler = page_flip_handler;
 
 			ret = drmHandleEvent(drm.fd, &evctx);
 			BYE_ON(ret, "drmHandleEvent failed: %s\n", ERRSTR);
@@ -532,4 +641,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
