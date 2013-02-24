@@ -334,6 +334,15 @@ static void drm_init(struct drm_device *dev, const struct v4l2_pix_format *fmt,
 	BYE_ON(ret, "failed to find valid mode\n");
 }
 
+static void drm_page_flip(struct drm_device *dev, struct buffer *buffer)
+{
+	int ret;
+
+	ret = drmModePageFlip(dev->fd, dev->crtc_id, buffer->fb_handle,
+		DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buffer->index);
+	BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
+}
+
 static void v4l2_init(struct v4l2_device *dev, unsigned int num_buffers)
 {
 	int ret;
@@ -474,9 +483,7 @@ int main(int argc, char *argv[])
 	BYE_ON(ret, "drmModeSetCrtc failed: %s\n", ERRSTR);
 
 	/* Enqueue the first buffer to DRM and all other buffers to V4L2 */
-	ret = drmModePageFlip(drm.fd, drm.crtc_id, buffers[0].fb_handle,
-		DRM_MODE_PAGE_FLIP_EVENT, 0);
-	BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
+	drm_page_flip(&drm, &buffers[0]);
 
 	for (unsigned int i = 1; i < s.buffer_count; ++i)
 		v4l2_queue_buffer(&v4l2, &buffers[i]);
@@ -501,12 +508,9 @@ int main(int argc, char *argv[])
 			struct buffer *buffer;
 
 			buffer = v4l2_dequeue_buffer(&v4l2, buffers);
-
-			ret = drmModePageFlip(drm.fd, drm.crtc_id, buffer->fb_handle,
-				DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buffer->index);
-			BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
-
+			drm_page_flip(&drm, buffer);
 		}
+
 		if (fds[1].revents & POLLIN) {
 			drmEventContext evctx;
 			memset(&evctx, 0, sizeof evctx);
