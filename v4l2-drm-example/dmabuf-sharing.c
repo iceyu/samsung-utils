@@ -150,8 +150,10 @@ static inline int parse_rect(char *s, struct v4l2_rect *r)
 
 static int parse_args(int argc, char *argv[], struct setup *s)
 {
-	if (argc <= 1)
+	if (argc <= 1) {
 		usage(argv[0]);
+		return -1;
+	}
 
 	int c, ret;
 	memset(s, 0, sizeof(*s));
