@@ -126,7 +126,7 @@ static void usage(char *name)
 	fprintf(stderr, "usage: %s [-bFfhiMoSst]\n", name);
 
 	fprintf(stderr, "\nCapture options:\n\n");
-	fprintf(stderr, "\t-i <video-node>\tset video node like /dev/video*\n");
+	fprintf(stderr, "\t-i <video-node>\tset video node (default: /dev/video0)\n");
 	fprintf(stderr, "\t-f <fourcc>\tset input format using 4cc\n");
 	fprintf(stderr, "\t-S <width,height>\tset input resolution\n");
 	fprintf(stderr, "\t-s <width,height>@<left,top>\tset crop area\n");
@@ -157,6 +157,8 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 
 	int c, ret;
 	memset(s, 0, sizeof(*s));
+
+	strcpy(s->video, "/dev/video0");
 
 	while ((c = getopt(argc, argv, "b:F:f:hi:M:o:S:s:t:")) != -1) {
 		switch (c) {
@@ -457,7 +459,6 @@ int main(int argc, char *argv[])
 	ret = parse_args(argc, argv, &s);
 	BYE_ON(ret, "failed to parse arguments\n");
 	BYE_ON(s.module[0] == 0, "DRM module is missing\n");
-	BYE_ON(s.video[0] == 0, "video node is missing\n");
 
 	memset(&v4l2, 0, sizeof v4l2);
 	v4l2.devname = s.video;
