@@ -293,8 +293,11 @@ fail_res:
 	return ret;
 }
 
-static void page_flip_handler(int fd, unsigned int frame,
-	unsigned int sec, unsigned int usec, void *data)
+static void page_flip_handler(int fd __attribute__((__unused__)),
+	unsigned int frame __attribute__((__unused__)),
+	unsigned int sec __attribute__((__unused__)),
+	unsigned int usec __attribute__((__unused__)),
+	void *data)
 {
 	int index = stream.current_buffer;
 	struct v4l2_buffer buf;
@@ -386,7 +389,7 @@ int main(int argc, char *argv[])
 	uint64_t size = fmt.fmt.pix.sizeimage;
 	uint32_t pitch = fmt.fmt.pix.bytesperline;
 	printf("size = %llu pitch = %u\n", size, pitch);
-	for (int i = 0; i < s.buffer_count; ++i) {
+	for (unsigned int i = 0; i < s.buffer_count; ++i) {
 		ret = buffer_create(&buffer[i], drmfd, &s, size, pitch);
 		BYE_ON(ret, "failed to create buffer%d\n", i);
 	}
@@ -406,7 +409,7 @@ int main(int argc, char *argv[])
 		DRM_MODE_PAGE_FLIP_EVENT, 0);
 	BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
 
-	for (int i = 1; i < s.buffer_count; ++i) {
+	for (unsigned int i = 1; i < s.buffer_count; ++i) {
 		struct v4l2_buffer buf;
 		memset(&buf, 0, sizeof buf);
 
