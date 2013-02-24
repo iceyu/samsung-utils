@@ -86,6 +86,25 @@ struct setup {
 	struct v4l2_rect compose;
 };
 
+struct drm_device {
+	const char *module;
+	int fd;
+
+	unsigned int crtc_id;
+	unsigned int con_id;
+
+	drmModeModeInfo mode;
+	const char *modestr;
+	unsigned int format;
+};
+
+struct v4l2_device {
+	const char *devname;
+	int fd;
+
+	struct v4l2_pix_format format;
+};
+
 struct buffer {
 	unsigned int bo_handle;
 	unsigned int fb_handle;
@@ -93,10 +112,12 @@ struct buffer {
 };
 
 struct stream {
-	int v4lfd;
+	struct drm_device *drm;
+	struct v4l2_device *v4l2;
+
+	struct buffer *buffers;
+	unsigned int num_buffers;
 	int current_buffer;
-	int buffer_count;
-	struct buffer *buffer;
 } stream;
 
 static void usage(char *name)
@@ -192,19 +213,19 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 	return 0;
 }
 
-static int buffer_create(struct buffer *b, int drmfd, struct setup *s,
-	uint64_t size, uint32_t pitch)
+static int drm_buffer_create(struct drm_device *dev, struct buffer *b,
+			     const struct v4l2_pix_format *fmt)
 {
 	struct drm_mode_create_dumb gem;
 	struct drm_mode_destroy_dumb gem_destroy;
 	int ret;
 
 	memset(&gem, 0, sizeof gem);
-	gem.width = s->w;
-	gem.height = s->h;
-	gem.bpp = pitch / s->w * 8;
-	gem.size = size;
-	ret = ioctl(drmfd, DRM_IOCTL_MODE_CREATE_DUMB, &gem);
+	gem.width = fmt->width;
+	gem.height = fmt->height;
+	gem.bpp = fmt->bytesperline / fmt->width * 8;
+	gem.size = fmt->sizeimage;
+	ret = ioctl(dev->fd, DRM_IOCTL_MODE_CREATE_DUMB, &gem);
 	if (WARN_ON(ret, "CREATE_DUMB failed: %s\n", ERRSTR))
 		return -1;
 	b->bo_handle = gem.handle;
@@ -213,19 +234,19 @@ static int buffer_create(struct buffer *b, int drmfd, struct setup *s,
 	memset(&prime, 0, sizeof prime);
 	prime.handle = b->bo_handle;
 
-	ret = ioctl(drmfd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime);
+	ret = ioctl(dev->fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime);
 	if (WARN_ON(ret, "PRIME_HANDLE_TO_FD failed: %s\n", ERRSTR))
 		goto fail_gem;
 	printf("dbuf_fd = %d\n", prime.fd);
 	b->dbuf_fd = prime.fd;
 
 	uint32_t offsets[4] = { 0 };
-	uint32_t pitches[4] = { pitch };
+	uint32_t pitches[4] = { fmt->bytesperline };
 	uint32_t bo_handles[4] = { b->bo_handle };
-	unsigned int fourcc = s->out_fourcc;
+	unsigned int fourcc = dev->format;
 	if (!fourcc)
-		fourcc = s->in_fourcc;
-	ret = drmModeAddFB2(drmfd, s->w, s->h, fourcc, bo_handles,
+		fourcc = fmt->pixelformat;
+	ret = drmModeAddFB2(dev->fd, fmt->width, fmt->height, fourcc, bo_handles,
 		pitches, offsets, &b->fb_handle, 0);
 	if (WARN_ON(ret, "drmModeAddFB2 failed: %s\n", ERRSTR))
 		goto fail_prime;
@@ -238,17 +259,16 @@ fail_prime:
 fail_gem:
 	memset(&gem_destroy, 0, sizeof gem_destroy);
 	gem_destroy.handle = b->bo_handle,
-	ret = ioctl(drmfd, DRM_IOCTL_MODE_DESTROY_DUMB, &gem_destroy);
+	ret = ioctl(dev->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &gem_destroy);
 	WARN_ON(ret, "DESTROY_DUMB failed: %s\n", ERRSTR);
 
 	return -1;
 }
 
-static int find_mode(drmModeModeInfo *m, int drmfd, struct setup *s,
-	uint32_t *con)
+static int drm_find_mode(struct drm_device *dev, drmModeModeInfo *m)
 {
 	int ret = -1;
-	drmModeRes *res = drmModeGetResources(drmfd);
+	drmModeRes *res = drmModeGetResources(dev->fd);
 	if (WARN_ON(!res, "drmModeGetResources failed: %s\n", ERRSTR))
 		return -1;
 
@@ -259,7 +279,7 @@ static int find_mode(drmModeModeInfo *m, int drmfd, struct setup *s,
 		goto fail_res;
 
 	drmModeConnector *c;
-	c = drmModeGetConnector(drmfd, s->conId);
+	c = drmModeGetConnector(dev->fd, dev->con_id);
 	if (WARN_ON(!c, "drmModeGetConnector failed: %s\n", ERRSTR))
 		goto fail_res;
 
@@ -268,13 +288,13 @@ static int find_mode(drmModeModeInfo *m, int drmfd, struct setup *s,
 
 	drmModeModeInfo *found = NULL;
 	for (int i = 0; i < c->count_modes; ++i) {
-		if (strcmp(c->modes[i].name, s->modestr) == 0) {
+		if (strcmp(c->modes[i].name, dev->modestr) == 0) {
 			found = &c->modes[i];
 			break;
 		}
 	}
 
-	if (WARN_ON(!found, "mode %s not supported\n", s->modestr)) {
+	if (WARN_ON(!found, "mode %s not supported\n", dev->modestr)) {
 		fprintf(stderr, "Valid modes:");
 		for (int i = 0; i < c->count_modes; ++i)
 			fprintf(stderr, " %s", c->modes[i].name);
@@ -283,8 +303,6 @@ static int find_mode(drmModeModeInfo *m, int drmfd, struct setup *s,
 	}
 
 	memcpy(m, found, sizeof *found);
-	if (con)
-		*con = c->connector_id;
 	ret = 0;
 
 fail_conn:
@@ -294,6 +312,77 @@ fail_res:
 	drmModeFreeResources(res);
 
 	return ret;
+}
+
+static void drm_init(struct drm_device *dev, const struct v4l2_pix_format *fmt,
+		     unsigned int num_buffers, struct buffer *buffers)
+{
+	int ret;
+
+	dev->fd = drmOpen(dev->module, NULL);
+	BYE_ON(dev->fd < 0, "drmOpen(%s) failed: %s\n", dev->module, ERRSTR);
+
+	/* TODO: add support for multiplanar formats */
+	for (unsigned int i = 0; i < num_buffers; ++i) {
+		ret = drm_buffer_create(dev, &buffers[i], fmt);
+		BYE_ON(ret, "failed to create buffer%d\n", i);
+	}
+	printf("buffers ready\n");
+
+	ret = drm_find_mode(dev, &dev->mode);
+	BYE_ON(ret, "failed to find valid mode\n");
+}
+
+static void v4l2_init(struct v4l2_device *dev, unsigned int num_buffers)
+{
+	int ret;
+
+	dev->fd = open(dev->devname, O_RDWR);
+	BYE_ON(dev->fd < 0, "failed to open %s: %s\n", dev->devname, ERRSTR);
+
+	struct v4l2_capability caps;
+	memset(&caps, 0, sizeof caps);
+
+	ret = ioctl(dev->fd, VIDIOC_QUERYCAP, &caps);
+	BYE_ON(ret, "VIDIOC_QUERYCAP failed: %s\n", ERRSTR);
+
+	/* TODO: add single plane support */
+	BYE_ON(~caps.capabilities & V4L2_CAP_VIDEO_CAPTURE,
+		"video: singleplanar capture is not supported\n");
+
+	struct v4l2_format fmt;
+	memset(&fmt, 0, sizeof fmt);
+	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+	ret = ioctl(dev->fd, VIDIOC_G_FMT, &fmt);
+	BYE_ON(ret < 0, "VIDIOC_G_FMT failed: %s\n", ERRSTR);
+	printf("G_FMT(start): width = %u, height = %u, 4cc = %.4s\n",
+		fmt.fmt.pix.width, fmt.fmt.pix.height,
+		(char*)&fmt.fmt.pix.pixelformat);
+
+	fmt.fmt.pix = dev->format;
+
+	ret = ioctl(dev->fd, VIDIOC_S_FMT, &fmt);
+	BYE_ON(ret < 0, "VIDIOC_S_FMT failed: %s\n", ERRSTR);
+
+	ret = ioctl(dev->fd, VIDIOC_G_FMT, &fmt);
+	BYE_ON(ret < 0, "VIDIOC_G_FMT failed: %s\n", ERRSTR);
+	printf("G_FMT(final): width = %u, height = %u, 4cc = %.4s\n",
+		fmt.fmt.pix.width, fmt.fmt.pix.height,
+		(char*)&fmt.fmt.pix.pixelformat);
+
+	struct v4l2_requestbuffers rqbufs;
+	memset(&rqbufs, 0, sizeof(rqbufs));
+	rqbufs.count = num_buffers;
+	rqbufs.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	rqbufs.memory = V4L2_MEMORY_DMABUF;
+
+	ret = ioctl(dev->fd, VIDIOC_REQBUFS, &rqbufs);
+	BYE_ON(ret < 0, "VIDIOC_REQBUFS failed: %s\n", ERRSTR);
+	BYE_ON(rqbufs.count < num_buffers, "video node allocated only "
+		"%u of %u buffers\n", rqbufs.count, num_buffers);
+
+	dev->format = fmt.fmt.pix;
 }
 
 static void page_flip_handler(int fd __attribute__((__unused__)),
@@ -314,101 +403,53 @@ static void page_flip_handler(int fd __attribute__((__unused__)),
 	buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	buf.memory = V4L2_MEMORY_DMABUF;
 	buf.index = index;
-	buf.m.fd = stream.buffer[index].dbuf_fd;
+	buf.m.fd = stream.buffers[index].dbuf_fd;
 
-	ret = ioctl(stream.v4lfd, VIDIOC_QBUF, &buf);
+	ret = ioctl(stream.v4l2->fd, VIDIOC_QBUF, &buf);
 	BYE_ON(ret, "VIDIOC_QBUF(index = %d) failed: %s\n", index, ERRSTR);
 }
 
 int main(int argc, char *argv[])
 {
-	int ret;
+	struct v4l2_device v4l2;
+	struct drm_device drm;
 	struct setup s;
+	int ret;
 
 	ret = parse_args(argc, argv, &s);
 	BYE_ON(ret, "failed to parse arguments\n");
 	BYE_ON(s.module[0] == 0, "DRM module is missing\n");
 	BYE_ON(s.video[0] == 0, "video node is missing\n");
 
-	int drmfd = drmOpen(s.module, NULL);
-	BYE_ON(drmfd < 0, "drmOpen(%s) failed: %s\n", s.module, ERRSTR);
-
-	int v4lfd = open(s.video, O_RDWR);
-	BYE_ON(v4lfd < 0, "failed to open %s: %s\n", s.video, ERRSTR);
-
-	struct v4l2_capability caps;
-	memset(&caps, 0, sizeof caps);
-
-	ret = ioctl(v4lfd, VIDIOC_QUERYCAP, &caps);
-	BYE_ON(ret, "VIDIOC_QUERYCAP failed: %s\n", ERRSTR);
-
-	/* TODO: add single plane support */
-	BYE_ON(~caps.capabilities & V4L2_CAP_VIDEO_CAPTURE,
-		"video: singleplanar capture is not supported\n");
-
-	struct v4l2_format fmt;
-	memset(&fmt, 0, sizeof fmt);
-	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-	ret = ioctl(v4lfd, VIDIOC_G_FMT, &fmt);
-	BYE_ON(ret < 0, "VIDIOC_G_FMT failed: %s\n", ERRSTR);
-	printf("G_FMT(start): width = %u, height = %u, 4cc = %.4s\n",
-		fmt.fmt.pix.width, fmt.fmt.pix.height,
-		(char*)&fmt.fmt.pix.pixelformat);
+	memset(&v4l2, 0, sizeof v4l2);
+	v4l2.devname = s.video;
 
 	if (s.use_wh) {
-		fmt.fmt.pix.width = s.w;
-		fmt.fmt.pix.height = s.h;
+		v4l2.format.width = s.w;
+		v4l2.format.height = s.h;
 	}
 	if (s.in_fourcc)
-		fmt.fmt.pix.pixelformat = s.in_fourcc;
+		v4l2.format.pixelformat = s.in_fourcc;
 
-	ret = ioctl(v4lfd, VIDIOC_S_FMT, &fmt);
-	BYE_ON(ret < 0, "VIDIOC_S_FMT failed: %s\n", ERRSTR);
+	v4l2_init(&v4l2, s.buffer_count);
 
-	ret = ioctl(v4lfd, VIDIOC_G_FMT, &fmt);
-	BYE_ON(ret < 0, "VIDIOC_G_FMT failed: %s\n", ERRSTR);
-	printf("G_FMT(final): width = %u, height = %u, 4cc = %.4s\n",
-		fmt.fmt.pix.width, fmt.fmt.pix.height,
-		(char*)&fmt.fmt.pix.pixelformat);
+	struct buffer buffers[s.buffer_count];
 
-	struct v4l2_requestbuffers rqbufs;
-	memset(&rqbufs, 0, sizeof(rqbufs));
-	rqbufs.count = s.buffer_count;
-	rqbufs.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	rqbufs.memory = V4L2_MEMORY_DMABUF;
+	memset(&drm, 0, sizeof drm);
+	drm.module = s.module;
+	drm.modestr = s.modestr;
+	drm.format = s.out_fourcc;
+	drm.crtc_id = s.crtId;
+	drm.con_id = s.conId;
 
-	ret = ioctl(v4lfd, VIDIOC_REQBUFS, &rqbufs);
-	BYE_ON(ret < 0, "VIDIOC_REQBUFS failed: %s\n", ERRSTR);
-	BYE_ON(rqbufs.count < s.buffer_count, "video node allocated only "
-		"%u of %u buffers\n", rqbufs.count, s.buffer_count);
+	drm_init(&drm, &v4l2.format, s.buffer_count, buffers);
 
-	s.in_fourcc = fmt.fmt.pix.pixelformat;
-	s.w = fmt.fmt.pix.width;
-	s.h = fmt.fmt.pix.height;
-
-	/* TODO: add support for multiplanar formats */
-	struct buffer buffer[s.buffer_count];
-	uint64_t size = fmt.fmt.pix.sizeimage;
-	uint32_t pitch = fmt.fmt.pix.bytesperline;
-	printf("size = %llu pitch = %u\n", size, pitch);
-	for (unsigned int i = 0; i < s.buffer_count; ++i) {
-		ret = buffer_create(&buffer[i], drmfd, &s, size, pitch);
-		BYE_ON(ret, "failed to create buffer%d\n", i);
-	}
-	printf("buffers ready\n");
-
-	drmModeModeInfo drmmode;
-	uint32_t con;
-	ret = find_mode(&drmmode, drmfd, &s, &con);
-	BYE_ON(ret, "failed to find valid mode\n");
-
-	ret = drmModeSetCrtc(drmfd, s.crtId, buffer[0].fb_handle, 0, 0,
-		&con, 1, &drmmode);
+	ret = drmModeSetCrtc(drm.fd, drm.crtc_id, buffers[0].fb_handle, 0, 0,
+		&drm.con_id, 1, &drm.mode);
 	BYE_ON(ret, "drmModeSetCrtc failed: %s\n", ERRSTR);
 
 	/* enqueueing first buffer to DRM */
-	ret = drmModePageFlip(drmfd, s.crtId, buffer[0].fb_handle,
+	ret = drmModePageFlip(drm.fd, drm.crtc_id, buffers[0].fb_handle,
 		DRM_MODE_PAGE_FLIP_EVENT, 0);
 	BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
 
@@ -419,25 +460,26 @@ int main(int argc, char *argv[])
 		buf.index = i;
 		buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		buf.memory = V4L2_MEMORY_DMABUF;
-		buf.m.fd = buffer[i].dbuf_fd;
-		ret = ioctl(v4lfd, VIDIOC_QBUF, &buf);
+		buf.m.fd = buffers[i].dbuf_fd;
+		ret = ioctl(v4l2.fd, VIDIOC_QBUF, &buf);
 		BYE_ON(ret < 0, "VIDIOC_QBUF for buffer %d failed: %s\n",
 			buf.index, ERRSTR);
 	}
 
 	int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	ret = ioctl(v4lfd, VIDIOC_STREAMON, &type);
+	ret = ioctl(v4l2.fd, VIDIOC_STREAMON, &type);
 	BYE_ON(ret < 0, "STREAMON failed: %s\n", ERRSTR);
 
 	struct pollfd fds[] = {
-		{ .fd = v4lfd, .events = POLLIN },
-		{ .fd = drmfd, .events = POLLIN },
+		{ .fd = v4l2.fd, .events = POLLIN },
+		{ .fd = drm.fd, .events = POLLIN },
 	};
 
 	/* buffer currently used by drm */
-	stream.v4lfd = v4lfd;
+	stream.v4l2 = &v4l2;
 	stream.current_buffer = -1;
-	stream.buffer = buffer;
+	stream.buffers = buffers;
+	stream.num_buffers = s.buffer_count;
 
 	while ((ret = poll(fds, 2, 5000)) > 0) {
 		if (fds[0].revents & POLLIN) {
@@ -446,10 +488,10 @@ int main(int argc, char *argv[])
 			/* dequeue buffer */
 			buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 			buf.memory = V4L2_MEMORY_DMABUF;
-			ret = ioctl(v4lfd, VIDIOC_DQBUF, &buf);
+			ret = ioctl(v4l2.fd, VIDIOC_DQBUF, &buf);
 			BYE_ON(ret, "VIDIOC_DQBUF failed: %s\n", ERRSTR);
 
-			ret = drmModePageFlip(drmfd, s.crtId, buffer[buf.index].fb_handle,
+			ret = drmModePageFlip(drm.fd, drm.crtc_id, buffers[buf.index].fb_handle,
 				DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buf.index);
 			BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
 
@@ -460,7 +502,7 @@ int main(int argc, char *argv[])
 			evctx.version = DRM_EVENT_CONTEXT_VERSION;
 			evctx.page_flip_handler = page_flip_handler;
 
-			ret = drmHandleEvent(drmfd, &evctx);
+			ret = drmHandleEvent(drm.fd, &evctx);
 			BYE_ON(ret, "drmHandleEvent failed: %s\n", ERRSTR);
 		}
 	}
