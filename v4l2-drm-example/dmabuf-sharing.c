@@ -482,9 +482,9 @@ int main(int argc, char *argv[])
 		&drm.con_id, 1, &drm.mode);
 	BYE_ON(ret, "drmModeSetCrtc failed: %s\n", ERRSTR);
 
-	/* Enqueue the first buffer to DRM and all other buffers to V4L2 */
-	drm_page_flip(&drm, &buffers[0]);
-
+	/* The first buffer is used for the initial CRTC frame buffer. Enqueue
+	 * all others to V4L2.
+	 */
 	for (unsigned int i = 1; i < s.buffer_count; ++i)
 		v4l2_queue_buffer(&v4l2, &buffers[i]);
 
@@ -499,7 +499,7 @@ int main(int argc, char *argv[])
 
 	/* buffer currently used by drm */
 	stream.v4l2 = &v4l2;
-	stream.current_buffer = -1;
+	stream.current_buffer = 0;
 	stream.buffers = buffers;
 	stream.num_buffers = s.buffer_count;
 
