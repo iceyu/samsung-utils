@@ -145,7 +145,7 @@ static void usage(char *name)
 static inline int parse_rect(char *s, struct v4l2_rect *r)
 {
 	return sscanf(s, "%d,%d@%d,%d", &r->width, &r->height,
-		&r->top, &r->left) != 4;
+		&r->left, &r->top) != 4;
 }
 
 static int parse_args(int argc, char *argv[], struct setup *s)
