@@ -71,7 +71,7 @@ static inline int warn(const char *file, int line, const char *fmt, ...)
 
 struct setup {
 	char module[32];
-	uint32_t conId;
+	int conId;
 	uint32_t crtId;
 	char modestr[32];
 	char video[32];
@@ -258,13 +258,8 @@ static int find_mode(drmModeModeInfo *m, int drmfd, struct setup *s,
 	if (WARN_ON(res->count_connectors <= 0, "drm: no connectors\n"))
 		goto fail_res;
 
-	if (WARN_ON(s->conId >= res->count_connectors, "connector %d "
-		"is not supported\n", s->conId))
-		goto fail_res;
-
 	drmModeConnector *c;
-	c = drmModeGetConnector(drmfd, res->connectors[s->conId]);
-
+	c = drmModeGetConnector(drmfd, s->conId);
 	if (WARN_ON(!c, "drmModeGetConnector failed: %s\n", ERRSTR))
 		goto fail_res;
 
