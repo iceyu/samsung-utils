@@ -20,7 +20,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/videodev2.h>
 #include <math.h>
 #include <poll.h>
 #include <stdio.h>
@@ -33,9 +32,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <drm/drm.h>
+#include <drm/drm_mode.h>
+
+#include <linux/videodev2.h>
+
 #include <xf86drm.h>
 #include <xf86drmMode.h>
-#include <exynos_drm.h>
 
 #define ERRSTR strerror(errno)
 
@@ -192,17 +195,17 @@ static int parse_args(int argc, char *argv[], struct setup *s)
 static int buffer_create(struct buffer *b, int drmfd, struct setup *s,
 	uint64_t size, uint32_t pitch)
 {
-	int ret = strncmp(s->module, "exynos", 6);
-	if (WARN_ON(ret, "drm: only exynos GEM is supported\n"))
-		return -1;
-
-	struct drm_exynos_gem_create gem;
-	struct drm_gem_close gem_close;
+	struct drm_mode_create_dumb gem;
+	struct drm_mode_destroy_dumb gem_destroy;
+	int ret;
 
 	memset(&gem, 0, sizeof gem);
+	gem.width = s->w;
+	gem.height = s->h;
+	gem.bpp = pitch / s->w * 8;
 	gem.size = size;
-	ret = ioctl(drmfd, DRM_IOCTL_EXYNOS_GEM_CREATE, &gem);
-	if (WARN_ON(ret, "EXYNOS_GEM_CREATE failed: %s\n", ERRSTR))
+	ret = ioctl(drmfd, DRM_IOCTL_MODE_CREATE_DUMB, &gem);
+	if (WARN_ON(ret, "CREATE_DUMB failed: %s\n", ERRSTR))
 		return -1;
 	b->bo_handle = gem.handle;
 
@@ -233,10 +236,10 @@ fail_prime:
 	close(b->dbuf_fd);
 
 fail_gem:
-	memset(&gem_close, 0, sizeof gem_close);
-	gem_close.handle = b->bo_handle,
-	ret = ioctl(drmfd, DRM_IOCTL_GEM_CLOSE, gem_close);
-	WARN_ON(ret, "GEM_CLOSE failed: %s\n", ERRSTR);
+	memset(&gem_destroy, 0, sizeof gem_destroy);
+	gem_destroy.handle = b->bo_handle,
+	ret = ioctl(drmfd, DRM_IOCTL_MODE_DESTROY_DUMB, &gem_destroy);
+	WARN_ON(ret, "DESTROY_DUMB failed: %s\n", ERRSTR);
 
 	return -1;
 }
