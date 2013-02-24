@@ -303,7 +303,7 @@ static void page_flip_handler(int fd __attribute__((__unused__)),
 	struct v4l2_buffer buf;
 	int ret;
 
-	stream.current_buffer = (int)data;
+	stream.current_buffer = (unsigned long)data;
 	if (index < 0)
 		return;
 
@@ -447,7 +447,7 @@ int main(int argc, char *argv[])
 			BYE_ON(ret, "VIDIOC_DQBUF failed: %s\n", ERRSTR);
 
 			ret = drmModePageFlip(drmfd, s.crtId, buffer[buf.index].fb_handle,
-				DRM_MODE_PAGE_FLIP_EVENT, (void*)buf.index);
+				DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buf.index);
 			BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
 
 		}
