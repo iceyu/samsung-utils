@@ -106,6 +106,7 @@ struct v4l2_device {
 };
 
 struct buffer {
+	unsigned int index;
 	unsigned int bo_handle;
 	unsigned int fb_handle;
 	int dbuf_fd;
@@ -385,6 +386,36 @@ static void v4l2_init(struct v4l2_device *dev, unsigned int num_buffers)
 	dev->format = fmt.fmt.pix;
 }
 
+static void v4l2_queue_buffer(struct v4l2_device *dev, const struct buffer *buffer)
+{
+	struct v4l2_buffer buf;
+	int ret;
+
+	memset(&buf, 0, sizeof buf);
+	buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	buf.memory = V4L2_MEMORY_DMABUF;
+	buf.index = buffer->index;
+	buf.m.fd = buffer->dbuf_fd;
+
+	ret = ioctl(dev->fd, VIDIOC_QBUF, &buf);
+	BYE_ON(ret, "VIDIOC_QBUF(index = %d) failed: %s\n", buffer->index, ERRSTR);
+}
+
+static struct buffer *v4l2_dequeue_buffer(struct v4l2_device *dev, struct buffer *buffers)
+{
+	struct v4l2_buffer buf;
+	int ret;
+
+	memset(&buf, 0, sizeof buf);
+
+	buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	buf.memory = V4L2_MEMORY_DMABUF;
+	ret = ioctl(dev->fd, VIDIOC_DQBUF, &buf);
+	BYE_ON(ret, "VIDIOC_DQBUF failed: %s\n", ERRSTR);
+
+	return &buffers[buf.index];
+}
+
 static void page_flip_handler(int fd __attribute__((__unused__)),
 	unsigned int frame __attribute__((__unused__)),
 	unsigned int sec __attribute__((__unused__)),
@@ -392,21 +423,12 @@ static void page_flip_handler(int fd __attribute__((__unused__)),
 	void *data)
 {
 	int index = stream.current_buffer;
-	struct v4l2_buffer buf;
-	int ret;
 
 	stream.current_buffer = (unsigned long)data;
 	if (index < 0)
 		return;
 
-	memset(&buf, 0, sizeof buf);
-	buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	buf.memory = V4L2_MEMORY_DMABUF;
-	buf.index = index;
-	buf.m.fd = stream.buffers[index].dbuf_fd;
-
-	ret = ioctl(stream.v4l2->fd, VIDIOC_QBUF, &buf);
-	BYE_ON(ret, "VIDIOC_QBUF(index = %d) failed: %s\n", index, ERRSTR);
+	v4l2_queue_buffer(stream.v4l2, &stream.buffers[index]);
 }
 
 int main(int argc, char *argv[])
@@ -435,6 +457,9 @@ int main(int argc, char *argv[])
 
 	struct buffer buffers[s.buffer_count];
 
+	for (unsigned int i = 0; i < s.buffer_count; ++i)
+		buffers[i].index = i;
+
 	memset(&drm, 0, sizeof drm);
 	drm.module = s.module;
 	drm.modestr = s.modestr;
@@ -448,23 +473,13 @@ int main(int argc, char *argv[])
 		&drm.con_id, 1, &drm.mode);
 	BYE_ON(ret, "drmModeSetCrtc failed: %s\n", ERRSTR);
 
-	/* enqueueing first buffer to DRM */
+	/* Enqueue the first buffer to DRM and all other buffers to V4L2 */
 	ret = drmModePageFlip(drm.fd, drm.crtc_id, buffers[0].fb_handle,
 		DRM_MODE_PAGE_FLIP_EVENT, 0);
 	BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
 
-	for (unsigned int i = 1; i < s.buffer_count; ++i) {
-		struct v4l2_buffer buf;
-		memset(&buf, 0, sizeof buf);
-
-		buf.index = i;
-		buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-		buf.memory = V4L2_MEMORY_DMABUF;
-		buf.m.fd = buffers[i].dbuf_fd;
-		ret = ioctl(v4l2.fd, VIDIOC_QBUF, &buf);
-		BYE_ON(ret < 0, "VIDIOC_QBUF for buffer %d failed: %s\n",
-			buf.index, ERRSTR);
-	}
+	for (unsigned int i = 1; i < s.buffer_count; ++i)
+		v4l2_queue_buffer(&v4l2, &buffers[i]);
 
 	int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	ret = ioctl(v4l2.fd, VIDIOC_STREAMON, &type);
@@ -483,16 +498,12 @@ int main(int argc, char *argv[])
 
 	while ((ret = poll(fds, 2, 5000)) > 0) {
 		if (fds[0].revents & POLLIN) {
-			struct v4l2_buffer buf;
-			memset(&buf, 0, sizeof buf);
-			/* dequeue buffer */
-			buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-			buf.memory = V4L2_MEMORY_DMABUF;
-			ret = ioctl(v4l2.fd, VIDIOC_DQBUF, &buf);
-			BYE_ON(ret, "VIDIOC_DQBUF failed: %s\n", ERRSTR);
+			struct buffer *buffer;
 
-			ret = drmModePageFlip(drm.fd, drm.crtc_id, buffers[buf.index].fb_handle,
-				DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buf.index);
+			buffer = v4l2_dequeue_buffer(&v4l2, buffers);
+
+			ret = drmModePageFlip(drm.fd, drm.crtc_id, buffer->fb_handle,
+				DRM_MODE_PAGE_FLIP_EVENT, (void*)(unsigned long)buffer->index);
 			BYE_ON(ret, "drmModePageFlip failed: %s\n", ERRSTR);
 
 		}
