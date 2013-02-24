@@ -267,9 +267,12 @@ static int find_mode(drmModeModeInfo *m, int drmfd, struct setup *s,
 		goto fail_conn;
 
 	drmModeModeInfo *found = NULL;
-	for (int i = 0; i < c->count_modes; ++i)
-		if (strcmp(c->modes[i].name, s->modestr) == 0)
+	for (int i = 0; i < c->count_modes; ++i) {
+		if (strcmp(c->modes[i].name, s->modestr) == 0) {
 			found = &c->modes[i];
+			break;
+		}
+	}
 
 	if (WARN_ON(!found, "mode %s not supported\n", s->modestr)) {
 		fprintf(stderr, "Valid modes:");
