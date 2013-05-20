@@ -76,13 +76,13 @@ int func_deq_buf(struct io_dev *dev, enum io_dir dir)
 	for (i = 0; i < bufs->nplanes; ++i)
 		bufs->bytesused[bufs->nplanes * idx + i] = lens[i];
 
-	dbg("Dequeued buffer %d/%d from %d:%d", idx, bufs->count, dev->fd, dir);
+	dbg("Dequeued buffer %d/%d from %d:%d ret=%d", idx, bufs->count, dev->fd, dir, ret);
 
 	--dev->io[dir].nbufs;
 
 	++dev->io[dir].counter;
 
-	if (ret <= 0 || (dev->io[dir].limit &&
+	if (ret < 0 || (dev->io[dir].limit &&
 				dev->io[dir].limit <= dev->io[dir].counter)) {
 		dev->io[dir].state = FS_END;
 		dbg("End on %d:%d", dev->fd, dir);
