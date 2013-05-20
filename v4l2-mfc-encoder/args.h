@@ -25,6 +25,8 @@
 
 #include "common.h"
 
+#define MAX_CTRLS 100
+
 struct options {
 	char *in_name;
 	char *mfc_name;
@@ -34,7 +36,8 @@ struct options {
 	int height;
 	int duration;
 	int rate;
-	int bitrate;
+	int nctrls;
+	int ctrls[MAX_CTRLS][2];
 };
 
 void print_usage(char const *name);

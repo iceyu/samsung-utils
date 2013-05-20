@@ -76,10 +76,8 @@ int main(int argc, char *argv[])
 	if (mfc_set_rate(mfc, opts.rate))
 		return 1;
 
-	if (mfc_set_bitrate(mfc, opts.bitrate))
-		return 1;
-
-	mfc_set_mpeg_control(mfc, V4L2_CID_MPEG_VIDEO_B_FRAMES, 2);
+	for (i = 0; i < opts.nctrls; ++i)
+		mfc_set_mpeg_control(mfc, opts.ctrls[i][0], opts.ctrls[i][1]);
 
 	if (opts.in_name)
 		if (v4l_copy_fmt(mfc, DIR_IN, input, DIR_OUT))
